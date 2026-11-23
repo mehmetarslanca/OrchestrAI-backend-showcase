@@ -1,0 +1,16 @@
+package com.arslanca.orchestrai.entity.enums;
+
+public enum AiConnectionType {
+    OPENAI_BYOK,
+    GOOGLE_BYOK,
+    ANTHROPIC_BYOK,
+    OLLAMA_BYOK,
+    OPENAI_COMPATIBLE_BYOK,
+    MOONSHOT_BYOK,
+    ZAI_BYOK,
+    XAI_BYOK,
+    GITHUB_MODELS_USER_LINKED,
+    GITHUB_COPILOT_USER_LINKED,
+    OPENAI_APP_PAID,
+    OPENAI_CODEX_CHATGPT
+}

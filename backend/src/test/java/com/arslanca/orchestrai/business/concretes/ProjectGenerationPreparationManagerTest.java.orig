@@ -1,0 +1,185 @@
+package com.arslanca.orchestrai.business.concretes;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import java.lang.reflect.Field;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import com.arslanca.orchestrai.business.abstracts.PromptAnalyzerService;
+import com.arslanca.orchestrai.business.abstracts.StarterResolutionService;
+import com.arslanca.orchestrai.business.dtos.orchestration.StructuredAnalysis;
+import com.arslanca.orchestrai.business.dtos.projectgeneration.ChatGenerationPreparationRequest;
+import com.arslanca.orchestrai.business.dtos.projectgeneration.GenerationPreparationRequest;
+import com.arslanca.orchestrai.business.dtos.projectgeneration.GenerationPreparationResponse;
+import com.arslanca.orchestrai.business.dtos.projectgeneration.StarterCandidate;
+import com.arslanca.orchestrai.business.dtos.projectgeneration.StarterSelection;
+import com.arslanca.orchestrai.business.dtos.projectgeneration.StarterSourceKind;
+import com.arslanca.orchestrai.dataaccess.abstracts.ChatRepository;
+import com.arslanca.orchestrai.dataaccess.abstracts.MessageRepository;
+import com.arslanca.orchestrai.dataaccess.abstracts.ProjectGenerationPreparationRepository;
+import com.arslanca.orchestrai.entity.concretes.ChatEntity;
+import com.arslanca.orchestrai.entity.concretes.ConversationProjectEntity;
+import com.arslanca.orchestrai.entity.concretes.MessageEntity;
+import com.arslanca.orchestrai.entity.concretes.ProjectGenerationPreparationEntity;
+import com.arslanca.orchestrai.entity.enums.MessageRole;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+@ExtendWith(MockitoExtension.class)
+class ProjectGenerationPreparationManagerTest {
+
+    @Mock private PromptAnalyzerService promptAnalyzerService;
+    @Mock private StarterResolutionService starterResolutionService;
+    @Mock private ProjectGenerationPreparationRepository preparationRepository;
+    @Mock private ChatRepository chatRepository;
+    @Mock private MessageRepository messageRepository;
+
+    private ProjectGenerationPreparationManager manager;
+
+    @BeforeEach
+    void setUp() {
+        manager = new ProjectGenerationPreparationManager(
+                promptAnalyzerService,
+                starterResolutionService,
+                preparationRepository,
+                chatRepository,
+                messageRepository,
+                new ObjectMapper());
+    }
+
+    @Test
+    @DisplayName("prepareGeneration should persist a prompt-backed preparation")
+    void shouldPersistPromptBackedPreparation() throws Exception {
+        final UUID userId = UUID.randomUUID();
+        final UUID preparationId = UUID.randomUUID();
+        final GenerationPreparationRequest request = new GenerationPreparationRequest(
+                "Acme Platform",
+                "cursor",
+                "Build an internal SaaS planning workspace",
+                "WEB");
+        final StructuredAnalysis analysis = new StructuredAnalysis(
+                "Acme Platform",
+                "saas",
+                List.of("nextjs", "postgres"),
+                List.of("auth", "projects"),
+                "medium",
+                false,
+                "",
+                "Internal SaaS planning workspace");
+        final StarterSelection starterSelection = starterSelection();
+
+        when(promptAnalyzerService.analyzePrompt(request.prompt())).thenReturn(analysis);
+        when(starterResolutionService.resolveStarter(analysis, "cursor")).thenReturn(starterSelection);
+        when(preparationRepository.save(any(ProjectGenerationPreparationEntity.class)))
+                .thenAnswer(invocation -> withPreparationId(invocation.getArgument(0), preparationId));
+
+        final GenerationPreparationResponse response = manager.prepareGeneration(userId, request);
+
+        assertThat(response.preparationId()).isEqualTo(preparationId);
+        assertThat(response.projectName()).isEqualTo("Acme Platform");
+        assertThat(response.recommendedStarter()).isNotNull();
+
+        final ArgumentCaptor<ProjectGenerationPreparationEntity> captor = ArgumentCaptor.forClass(ProjectGenerationPreparationEntity.class);
+        verify(preparationRepository).save(captor.capture());
+        assertThat(readField(captor.getValue(), "userId")).isEqualTo(userId);
+        assertThat(readField(captor.getValue(), "chatId")).isNull();
+        assertThat(readField(captor.getValue(), "sourceChannel")).isEqualTo("WEB");
+    }
+
+    @Test
+    @DisplayName("prepareGenerationFromChat should persist a chat-backed preparation snapshot")
+    void shouldPersistChatBackedPreparation() throws Exception {
+        final UUID userId = UUID.randomUUID();
+        final UUID chatId = UUID.randomUUID();
+        final UUID preparationId = UUID.randomUUID();
+        final ConversationProjectEntity conversationProject = ConversationProjectEntity.builder()
+                .id(UUID.randomUUID())
+                .name("Planning Workspace")
+                .isAutoNamed(false)
+                .build();
+        final ChatEntity chat = ChatEntity.builder()
+                .id(chatId)
+                .conversationProject(conversationProject)
+                .build();
+        final ChatGenerationPreparationRequest request = new ChatGenerationPreparationRequest("cursor");
+        final StructuredAnalysis analysis = new StructuredAnalysis(
+                "Planning Workspace",
+                "saas",
+                List.of("nextjs", "postgres"),
+                List.of("chat", "generation"),
+                "medium",
+                false,
+                "",
+                "Chat-driven project planning workspace");
+        final StarterSelection starterSelection = starterSelection();
+        final List<MessageEntity> recentMessages = List.of(
+                MessageEntity.builder().role(MessageRole.ASSISTANT).content("You should use Next.js and Postgres.").build(),
+                MessageEntity.builder().role(MessageRole.USER).content("I need a planning workspace for AI orchestration.").build());
+
+        when(chatRepository.findByIdAndUserId(chatId, userId)).thenReturn(Optional.of(chat));
+        when(messageRepository.countByChatId(chatId)).thenReturn(4L);
+        when(messageRepository.findRecentMessagesByChatId(chatId, 20)).thenReturn(recentMessages);
+        when(promptAnalyzerService.analyzePrompt(any(String.class))).thenReturn(analysis);
+        when(starterResolutionService.resolveStarter(analysis, "cursor")).thenReturn(starterSelection);
+        when(preparationRepository.save(any(ProjectGenerationPreparationEntity.class)))
+                .thenAnswer(invocation -> withPreparationId(invocation.getArgument(0), preparationId));
+
+        final GenerationPreparationResponse response = manager.prepareGenerationFromChat(userId, chatId, request);
+
+        assertThat(response.preparationId()).isEqualTo(preparationId);
+        assertThat(response.projectName()).isEqualTo("Planning Workspace");
+
+        final ArgumentCaptor<ProjectGenerationPreparationEntity> captor = ArgumentCaptor.forClass(ProjectGenerationPreparationEntity.class);
+        verify(preparationRepository).save(captor.capture());
+        assertThat(readField(captor.getValue(), "chatId")).isEqualTo(chatId);
+        assertThat(readField(captor.getValue(), "chatMessageCount")).isEqualTo(4L);
+        assertThat(readField(captor.getValue(), "sourceChannel")).isEqualTo("CHAT");
+    }
+
+    private StarterSelection starterSelection() {
+        return new StarterSelection(
+                UUID.randomUUID(),
+                "Acme Platform",
+                "cursor",
+                new StarterCandidate(
+                        "nextjs-saas-shell",
+                        "Next.js SaaS Shell",
+                        "saas",
+                        StarterSourceKind.REPO_PACK,
+                        "repo-pack",
+                        List.of("nextjs", "postgres"),
+                        "Best match for the requested stack."),
+                List.of(),
+                false,
+                "");
+    }
+
+    private ProjectGenerationPreparationEntity withPreparationId(
+            final ProjectGenerationPreparationEntity entity,
+            final UUID preparationId) throws Exception {
+        final Field idField = ProjectGenerationPreparationEntity.class.getDeclaredField("id");
+        idField.setAccessible(true);
+        idField.set(entity, preparationId);
+        return entity;
+    }
+
+    private Object readField(final ProjectGenerationPreparationEntity entity, final String fieldName) throws Exception {
+        final Field field = ProjectGenerationPreparationEntity.class.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        return field.get(entity);
+    }
+}

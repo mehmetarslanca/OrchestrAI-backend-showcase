@@ -1,0 +1,20 @@
+{
+  "key": "spring-boot-postgres-api",
+  "title": "Spring Boot Postgres API",
+  "family": "spring-boot",
+  "projectTypes": ["api", "backend-service"],
+  "stackTags": ["spring-boot", "java21", "postgres", "jpa"],
+  "supportsIdeTargets": ["cursor", "windsurf", "antigravity", "generic"],
+  "sourceKind": "official-adapter",
+  "sourceRef": "spring-initializr",
+  "priority": 100,
+  "docsOnlyFallbackAllowed": true,
+  "parameterSchema": {
+    "build": "maven",
+    "packaging": "jar"
+  },
+  "constraints": [
+    "Prefer layered Spring Boot packages.",
+    "Target Java 21 and PostgreSQL."
+  ]
+}

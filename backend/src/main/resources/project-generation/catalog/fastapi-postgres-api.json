@@ -1,0 +1,18 @@
+{
+  "key": "fastapi-postgres-api",
+  "title": "FastAPI Postgres API",
+  "family": "fastapi",
+  "projectTypes": ["api", "backend-service"],
+  "stackTags": ["fastapi", "python", "postgres", "sqlmodel"],
+  "supportsIdeTargets": ["cursor", "windsurf", "antigravity", "generic"],
+  "status": "disabled",
+  "sourceKind": "repo-pack",
+  "sourceRef": "fastapi-postgres-api",
+  "priority": 82,
+  "docsOnlyFallbackAllowed": true,
+  "parameterSchema": {},
+  "constraints": [
+    "Keep routers, services, and schemas separated.",
+    "Preserve async request handling for I/O work."
+  ]
+}

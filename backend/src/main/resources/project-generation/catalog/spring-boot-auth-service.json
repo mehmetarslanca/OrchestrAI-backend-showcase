@@ -1,0 +1,20 @@
+{
+  "key": "spring-boot-auth-service",
+  "title": "Spring Boot Auth Service",
+  "family": "spring-boot",
+  "projectTypes": ["api", "backend-service"],
+  "stackTags": ["spring-boot", "java21", "postgres", "security"],
+  "supportsIdeTargets": ["cursor", "windsurf", "antigravity", "generic"],
+  "sourceKind": "official-adapter",
+  "sourceRef": "spring-initializr",
+  "priority": 95,
+  "docsOnlyFallbackAllowed": true,
+  "parameterSchema": {
+    "build": "maven",
+    "packaging": "jar"
+  },
+  "constraints": [
+    "Keep authentication and user modules isolated.",
+    "Prefer Spring Security defaults over custom auth flows."
+  ]
+}

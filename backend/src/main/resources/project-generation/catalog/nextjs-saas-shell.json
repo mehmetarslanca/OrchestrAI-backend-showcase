@@ -1,0 +1,18 @@
+{
+  "key": "nextjs-saas-shell",
+  "title": "Next.js SaaS Shell",
+  "family": "nextjs",
+  "projectTypes": ["web-app", "saas"],
+  "stackTags": ["nextjs", "react", "typescript", "tailwindcss", "stripe"],
+  "supportsIdeTargets": ["cursor", "windsurf", "antigravity", "generic"],
+  "status": "disabled",
+  "sourceKind": "repo-pack",
+  "sourceRef": "nextjs-saas-shell",
+  "priority": 100,
+  "docsOnlyFallbackAllowed": true,
+  "parameterSchema": {},
+  "constraints": [
+    "Keep app router conventions.",
+    "Preserve dashboard and billing route boundaries."
+  ]
+}

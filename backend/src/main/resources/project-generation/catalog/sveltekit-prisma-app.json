@@ -1,0 +1,18 @@
+{
+  "key": "sveltekit-prisma-app",
+  "title": "SvelteKit Prisma App",
+  "family": "sveltekit",
+  "projectTypes": ["web-app", "fullstack-app"],
+  "stackTags": ["sveltekit", "typescript", "prisma", "postgres"],
+  "supportsIdeTargets": ["cursor", "windsurf", "antigravity", "generic"],
+  "status": "disabled",
+  "sourceKind": "repo-pack",
+  "sourceRef": "sveltekit-prisma-app",
+  "priority": 78,
+  "docsOnlyFallbackAllowed": true,
+  "parameterSchema": {},
+  "constraints": [
+    "Keep server routes and Prisma models aligned.",
+    "Preserve SSR-safe data access patterns."
+  ]
+}

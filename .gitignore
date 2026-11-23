@@ -1,0 +1,23 @@
+# Build artifacts and local tooling
+**/target/
+**/.mvn/timing.properties
+**/*.log
+.DS_Store
+.idea/
+.vscode/
+
+# Secrets, runtime state and personal settings (must not be committed)
+.env
+.env.*
+**/.env
+**/.env.*
+**/application.properties
+**/application-dev.properties
+**/application-prod.properties
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.pem
+**/*.p12
+**/*.jks
+**/*.key

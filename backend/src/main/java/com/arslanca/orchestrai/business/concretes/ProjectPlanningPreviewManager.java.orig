@@ -1,0 +1,307 @@
+package com.arslanca.orchestrai.business.concretes;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import com.arslanca.orchestrai.business.abstracts.BlueprintPlanningService;
+import com.arslanca.orchestrai.business.abstracts.HeavyModelResolutionService;
+import com.arslanca.orchestrai.business.abstracts.PlanningModelPolicyService;
+import com.arslanca.orchestrai.business.abstracts.ProjectPlanningPreviewService;
+import com.arslanca.orchestrai.business.abstracts.StarterSelectionResolver;
+import com.arslanca.orchestrai.business.dtos.ai.ResolvedHeavyModel;
+import com.arslanca.orchestrai.business.dtos.orchestration.PlanningComplexity;
+import com.arslanca.orchestrai.business.dtos.orchestration.PlanningModelPolicy;
+import com.arslanca.orchestrai.business.dtos.orchestration.PlanningSummary;
+import com.arslanca.orchestrai.business.dtos.orchestration.StructuredAnalysis;
+import com.arslanca.orchestrai.business.dtos.projectgeneration.BlueprintPlan;
+import com.arslanca.orchestrai.business.dtos.projectgeneration.GenerationPreviewRequest;
+import com.arslanca.orchestrai.business.dtos.projectgeneration.PlanningPreview;
+import com.arslanca.orchestrai.business.dtos.projectgeneration.PlanningPreviewStatus;
+import com.arslanca.orchestrai.business.dtos.projectgeneration.StarterSelection;
+import com.arslanca.orchestrai.core.exception.type.PreparationStateException;
+import com.arslanca.orchestrai.core.exception.type.ResourceNotFoundException;
+import com.arslanca.orchestrai.dataaccess.abstracts.MessageRepository;
+import com.arslanca.orchestrai.dataaccess.abstracts.ProjectGenerationPreparationRepository;
+import com.arslanca.orchestrai.dataaccess.abstracts.ProjectPlanningPreviewRepository;
+import com.arslanca.orchestrai.entity.concretes.ProjectGenerationPreparationEntity;
+import com.arslanca.orchestrai.entity.concretes.ProjectPlanningPreviewEntity;
+import com.arslanca.orchestrai.entity.enums.ProjectGenerationPreparationStatus;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+@Service
+public class ProjectPlanningPreviewManager implements ProjectPlanningPreviewService {
+
+    private static final Logger log = LoggerFactory.getLogger(ProjectPlanningPreviewManager.class);
+    private static final TypeReference<LinkedHashMap<String, Object>> MAP_TYPE = new TypeReference<>() {};
+
+    private final ProjectGenerationPreparationRepository preparationRepository;
+    private final ProjectPlanningPreviewRepository planningPreviewRepository;
+    private final MessageRepository messageRepository;
+    private final StarterSelectionResolver starterSelectionResolver;
+    private final HeavyModelResolutionService heavyModelResolutionService;
+    private final PlanningModelPolicyService planningModelPolicyService;
+    private final BlueprintPlanningService blueprintPlanningService;
+    private final ObjectMapper objectMapper;
+    private final org.springframework.transaction.support.TransactionTemplate transactionTemplate;
+
+    public ProjectPlanningPreviewManager(
+            final ProjectGenerationPreparationRepository preparationRepository,
+            final ProjectPlanningPreviewRepository planningPreviewRepository,
+            final MessageRepository messageRepository,
+            final StarterSelectionResolver starterSelectionResolver,
+            final HeavyModelResolutionService heavyModelResolutionService,
+            final PlanningModelPolicyService planningModelPolicyService,
+            final BlueprintPlanningService blueprintPlanningService,
+            final ObjectMapper objectMapper,
+            final org.springframework.transaction.support.TransactionTemplate transactionTemplate) {
+        this.preparationRepository = preparationRepository;
+        this.planningPreviewRepository = planningPreviewRepository;
+        this.messageRepository = messageRepository;
+        this.starterSelectionResolver = starterSelectionResolver;
+        this.heavyModelResolutionService = heavyModelResolutionService;
+        this.planningModelPolicyService = planningModelPolicyService;
+        this.blueprintPlanningService = blueprintPlanningService;
+        this.objectMapper = objectMapper;
+        this.transactionTemplate = transactionTemplate;
+    }
+
+    @Override
+    public PlanningPreview generatePreview(final UUID userId, final GenerationPreviewRequest request) {
+        final ProjectGenerationPreparationEntity preparation = preparationRepository.findByIdAndUserId(request.preparationId(), userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Generation preparation not found or access denied"));
+        ensurePreparationPreviewable(preparation);
+        ensureChatPreparationStillCurrent(preparation);
+
+        final StructuredAnalysis structuredAnalysis = objectMapper.convertValue(preparation.snapshotStructuredAnalysis(), StructuredAnalysis.class);
+        final StarterSelection originalStarterSelection = objectMapper.convertValue(preparation.snapshotStarterSelection(), StarterSelection.class);
+        final StarterSelection selectedStarterSelection = starterSelectionResolver.resolveSelectedStarter(originalStarterSelection, request.starterKey());
+        final ResolvedHeavyModel resolvedHeavyModel = heavyModelResolutionService.resolve(userId, null, null);
+        final PlanningModelPolicy planningModelPolicy = planningModelPolicyService.resolvePolicy(
+                structuredAnalysis.planningComplexity(),
+                resolvedHeavyModel,
+                selectedStarterSelection.docsOnlyFallback());
+
+        if ("stronger_model_required".equals(planningModelPolicy.degradeStrategy())) {
+            throw new PreparationStateException("This scope requires a stronger planner model before a preview can be generated.");
+        }
+
+        final String previewCacheKey = buildPreviewCacheKey(preparation, selectedStarterSelection, planningModelPolicy);
+        
+        final ProjectPlanningPreviewEntity initializedPreview = transactionTemplate.execute(status -> {
+            final Optional<ProjectPlanningPreviewEntity> cachedPreview = planningPreviewRepository
+                    .findFirstByPreparationIdAndPreviewCacheKeyAndPreviewStatusInOrderByCreatedAtDesc(
+                            preparation.getId(),
+                            previewCacheKey,
+                            List.of(PlanningPreviewStatus.DRAFT, PlanningPreviewStatus.READY_FOR_REVIEW, PlanningPreviewStatus.ACCEPTED));
+            if (cachedPreview.isPresent()) {
+                log.info("Reusing cached or draft planning preview: preparationId={}, previewId={}, status={}",
+                        preparation.getId(),
+                        cachedPreview.get().getId(),
+                        cachedPreview.get().getPreviewStatus());
+                if (cachedPreview.get().getPreviewStatus() == PlanningPreviewStatus.DRAFT) {
+                    throw new PreparationStateException("A planning preview for these settings is currently being generated. Please wait.");
+                }
+                return cachedPreview.get();
+            }
+
+            invalidateSiblingPreviews(preparation.getId(), previewCacheKey);
+
+            return planningPreviewRepository.save(ProjectPlanningPreviewEntity.createDraft(
+                    preparation.getId(),
+                    resolveStarterKey(selectedStarterSelection),
+                    planningModelPolicy.selectedPlanningMode(),
+                    previewCacheKey,
+                    PlanningPreview.CURRENT_CONTRACT_VERSION));
+        });
+
+        if (initializedPreview.getPreviewStatus() != PlanningPreviewStatus.DRAFT) {
+            return toPlanningPreview(initializedPreview);
+        }
+
+        final BlueprintPlan blueprintPlan;
+        try {
+            blueprintPlan = blueprintPlanningService.planBlueprint(
+                    structuredAnalysis,
+                    preparation.getIdeTarget(),
+                    resolvedHeavyModel,
+                    selectedStarterSelection,
+                    planningModelPolicy);
+        } catch (final RuntimeException exception) {
+            transactionTemplate.executeWithoutResult(status -> {
+                initializedPreview.markFailed(exception.getMessage());
+                planningPreviewRepository.save(initializedPreview);
+            });
+            throw exception;
+        }
+
+        return transactionTemplate.execute(status -> {
+            initializedPreview.markReadyForReview(
+                    buildQualitySummary(structuredAnalysis, planningModelPolicy, selectedStarterSelection),
+                    buildRepairStatus(planningModelPolicy),
+                    serializePayload(blueprintPlan));
+            planningPreviewRepository.save(initializedPreview);
+            return toPlanningPreview(initializedPreview);
+        });
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PlanningPreview getPreview(final UUID userId, final UUID previewId) {
+        return toPlanningPreview(loadOwnedPreview(userId, previewId));
+    }
+
+    @Override
+    @Transactional
+    public PlanningPreview acceptPreview(final UUID userId, final UUID previewId) {
+        final ProjectPlanningPreviewEntity previewEntity = loadOwnedPreview(userId, previewId);
+        final ProjectGenerationPreparationEntity preparation = preparationRepository
+                .findByIdAndUserId(previewEntity.getPreparationId(), userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Generation preparation not found or access denied"));
+
+        ensurePreparationPreviewable(preparation);
+        ensureChatPreparationStillCurrent(preparation);
+        previewEntity.markAccepted();
+        invalidateSiblingPreviews(previewEntity.getPreparationId(), previewEntity.getPreviewCacheKey(), previewEntity.getId());
+        planningPreviewRepository.save(previewEntity);
+        return toPlanningPreview(previewEntity);
+    }
+
+    private ProjectPlanningPreviewEntity loadOwnedPreview(final UUID userId, final UUID previewId) {
+        final ProjectPlanningPreviewEntity previewEntity = planningPreviewRepository.findById(previewId)
+                .orElseThrow(() -> new ResourceNotFoundException("Planning preview not found"));
+        preparationRepository.findByIdAndUserId(previewEntity.getPreparationId(), userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Planning preview not found or access denied"));
+        return previewEntity;
+    }
+
+    private void ensurePreparationPreviewable(final ProjectGenerationPreparationEntity preparation) {
+        if (preparation.getStatus() == ProjectGenerationPreparationStatus.STARTED) {
+            throw new PreparationStateException("Generation already started for this preparation.");
+        }
+        if (preparation.getStatus() == ProjectGenerationPreparationStatus.INVALIDATED) {
+            throw new PreparationStateException("This preparation is no longer valid. Please prepare generation again.");
+        }
+    }
+
+    private void ensureChatPreparationStillCurrent(final ProjectGenerationPreparationEntity preparation) {
+        if (preparation.getChatId() == null || preparation.getChatMessageCount() == null) {
+            return;
+        }
+
+        final long currentMessageCount = messageRepository.countByChatId(preparation.getChatId());
+        if (currentMessageCount != preparation.getChatMessageCount()) {
+            preparation.markAsInvalidated();
+            preparationRepository.save(preparation);
+            throw new PreparationStateException("The chat changed after this review was prepared. Please prepare generation again.");
+        }
+    }
+
+    private void invalidateSiblingPreviews(final UUID preparationId, final String previewCacheKey) {
+        invalidateSiblingPreviews(preparationId, previewCacheKey, null);
+    }
+
+    private void invalidateSiblingPreviews(final UUID preparationId, final String previewCacheKey, final UUID keepPreviewId) {
+        final List<ProjectPlanningPreviewEntity> previews = planningPreviewRepository.findByPreparationIdOrderByCreatedAtDesc(preparationId);
+        final List<ProjectPlanningPreviewEntity> previewsToInvalidate = previews.stream()
+                .filter(preview -> keepPreviewId == null || !preview.getId().equals(keepPreviewId))
+                .filter(preview -> preview.getPreviewStatus() != PlanningPreviewStatus.INVALIDATED)
+                .filter(preview -> !previewCacheKey.equals(preview.getPreviewCacheKey()))
+                .toList();
+        
+        previewsToInvalidate.forEach(preview -> preview.markInvalidated("superseded_by_new_preview"));
+        if (!previewsToInvalidate.isEmpty()) {
+            planningPreviewRepository.saveAll(previewsToInvalidate);
+        }
+    }
+
+    private Map<String, Object> buildQualitySummary(
+            final StructuredAnalysis structuredAnalysis,
+            final PlanningModelPolicy planningModelPolicy,
+            final StarterSelection starterSelection) {
+        final Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("complexity", structuredAnalysis.planningComplexity().name().toLowerCase());
+        summary.put("complexityMarkers", structuredAnalysis.complexityMarkers());
+        summary.put("capabilityRisk", planningModelPolicy.capabilityRisk());
+        summary.put("previewRequired", planningModelPolicy.previewRequired());
+        summary.put("previewRecommended", planningModelPolicy.previewRecommended());
+        summary.put("resolvedModelKey", planningModelPolicy.resolvedModelKey());
+        summary.put("modelCapability", planningModelPolicy.modelCapability().name().toLowerCase());
+        summary.put("localModel", planningModelPolicy.localModel());
+        summary.put("degradeStrategy", planningModelPolicy.degradeStrategy());
+        summary.put("docsOnlyFallback", starterSelection.docsOnlyFallback());
+        return summary;
+    }
+
+    private Map<String, Object> buildRepairStatus(final PlanningModelPolicy planningModelPolicy) {
+        if ("none".equals(planningModelPolicy.degradeStrategy())) {
+            return Map.of("status", "not_required");
+        }
+        return Map.of(
+                "status", "advisory",
+                "strategy", planningModelPolicy.degradeStrategy());
+    }
+
+    private String buildPreviewCacheKey(
+            final ProjectGenerationPreparationEntity preparation,
+            final StarterSelection selectedStarterSelection,
+            final PlanningModelPolicy planningModelPolicy) {
+        final Map<String, Object> cacheSeed = new LinkedHashMap<>();
+        cacheSeed.put("structuredAnalysis", preparation.snapshotStructuredAnalysis());
+        cacheSeed.put("starterKey", resolveStarterKey(selectedStarterSelection));
+        cacheSeed.put("ideTarget", preparation.getIdeTarget());
+        cacheSeed.put("planningMode", planningModelPolicy.selectedPlanningMode().name());
+        cacheSeed.put("resolvedModelKey", planningModelPolicy.resolvedModelKey());
+        cacheSeed.put("degradeStrategy", planningModelPolicy.degradeStrategy());
+        cacheSeed.put("preparationContractVersion", preparation.getContractVersion());
+        cacheSeed.put("previewContractVersion", PlanningPreview.CURRENT_CONTRACT_VERSION);
+        try {
+            final String payload = objectMapper.writeValueAsString(cacheSeed);
+            final MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(payload.getBytes(StandardCharsets.UTF_8)));
+        } catch (final JsonProcessingException | NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("Failed to compute planning preview cache key", exception);
+        }
+    }
+
+    private String resolveStarterKey(final StarterSelection selectedStarterSelection) {
+        if (selectedStarterSelection.docsOnlyFallback() || selectedStarterSelection.recommendedStarter() == null) {
+            return "docs_only";
+        }
+        return selectedStarterSelection.recommendedStarter().key();
+    }
+
+    private PlanningPreview toPlanningPreview(final ProjectPlanningPreviewEntity entity) {
+        final BlueprintPlan blueprintPayload = entity.getBlueprintPayloadJson().isEmpty()
+                ? null
+                : objectMapper.convertValue(entity.getBlueprintPayloadJson(), BlueprintPlan.class);
+        return new PlanningPreview(
+                entity.getId(),
+                entity.getPreparationId(),
+                entity.getSelectedStarterKey(),
+                entity.getPlanningMode(),
+                entity.getPreviewStatus(),
+                entity.getQualitySummaryJson(),
+                entity.getRepairStatusJson(),
+                entity.getPreviewContractVersion(),
+                blueprintPayload);
+    }
+
+    private Map<String, Object> serializePayload(final Object payload) {
+        return objectMapper.convertValue(payload, MAP_TYPE);
+    }
+}

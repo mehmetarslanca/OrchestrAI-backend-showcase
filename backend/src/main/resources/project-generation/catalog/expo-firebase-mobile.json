@@ -1,0 +1,18 @@
+{
+  "key": "expo-firebase-mobile",
+  "title": "Expo Firebase Mobile",
+  "family": "expo",
+  "projectTypes": ["mobile-app"],
+  "stackTags": ["expo", "react-native", "typescript", "firebase"],
+  "supportsIdeTargets": ["cursor", "windsurf", "antigravity", "generic"],
+  "status": "disabled",
+  "sourceKind": "repo-pack",
+  "sourceRef": "expo-firebase-mobile",
+  "priority": 84,
+  "docsOnlyFallbackAllowed": true,
+  "parameterSchema": {},
+  "constraints": [
+    "Keep Expo-compatible native dependencies only.",
+    "Preserve mobile navigation and auth flows."
+  ]
+}

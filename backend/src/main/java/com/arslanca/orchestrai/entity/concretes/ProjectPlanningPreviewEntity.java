@@ -1,0 +1,270 @@
+package com.arslanca.orchestrai.entity.concretes;
+
+import java.time.OffsetDateTime;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.UUID;
+
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.annotations.UpdateTimestamp;
+import org.hibernate.type.SqlTypes;
+
+import com.arslanca.orchestrai.business.dtos.orchestration.PlanningDecisionPayloadMapper;
+import com.arslanca.orchestrai.business.dtos.orchestration.PlanningRepairOutcome;
+import com.arslanca.orchestrai.business.dtos.orchestration.PlanningMode;
+import com.arslanca.orchestrai.business.dtos.orchestration.RepairStatus;
+import com.arslanca.orchestrai.business.dtos.projectgeneration.PlanningPreviewStatus;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import jakarta.persistence.Version;
+
+@Entity
+@Table(name = "project_planning_previews")
+public class ProjectPlanningPreviewEntity {
+
+  @Id
+  @GeneratedValue(strategy = GenerationType.UUID)
+  @Column(name = "id", updatable = false, nullable = false)
+  private UUID id;
+
+  @Column(name = "preparation_id", nullable = false)
+  private UUID preparationId;
+
+  @Column(name = "selected_starter_key")
+  private String selectedStarterKey;
+
+  @Column(name = "preview_cache_key")
+  private String previewCacheKey;
+
+  @Enumerated(EnumType.STRING)
+  @Column(name = "planning_mode", nullable = false, length = 50)
+  private PlanningMode planningMode;
+
+  @Enumerated(EnumType.STRING)
+  @Column(name = "preview_status", nullable = false, length = 50)
+  private PlanningPreviewStatus previewStatus;
+
+  @JdbcTypeCode(SqlTypes.JSON)
+  @Column(name = "quality_summary", columnDefinition = "jsonb")
+  private Map<String, Object> qualitySummaryJson;
+
+  @JdbcTypeCode(SqlTypes.JSON)
+  @Column(name = "repair_status", columnDefinition = "jsonb")
+  private Map<String, Object> repairStatusJson;
+
+  @Column(name = "preview_contract_version", nullable = false)
+  private String previewContractVersion;
+
+  @JdbcTypeCode(SqlTypes.JSON)
+  @Column(name = "blueprint_payload", columnDefinition = "jsonb")
+  private Map<String, Object> blueprintPayloadJson;
+
+  @JdbcTypeCode(SqlTypes.JSON)
+  @Column(name = "governance_snapshot", columnDefinition = "jsonb")
+  private Map<String, Object> governanceSnapshotJson;
+
+  @CreationTimestamp
+  @Column(name = "created_at", nullable = false, updatable = false)
+  private OffsetDateTime createdAt;
+
+  @UpdateTimestamp
+  @Column(name = "updated_at", nullable = false)
+  private OffsetDateTime updatedAt;
+
+  @Version
+  @Column(name = "version")
+  private Long version = 0L;
+
+  protected ProjectPlanningPreviewEntity() {
+  }
+
+  public static ProjectPlanningPreviewEntity createDraft(
+      final UUID preparationId,
+      final String selectedStarterKey,
+      final PlanningMode planningMode,
+      final String previewCacheKey,
+      final String previewContractVersion) {
+    final ProjectPlanningPreviewEntity entity = new ProjectPlanningPreviewEntity();
+    entity.preparationId = preparationId;
+    entity.selectedStarterKey = selectedStarterKey == null ? null : selectedStarterKey.trim();
+    entity.previewCacheKey = previewCacheKey == null ? "" : previewCacheKey.trim();
+    entity.planningMode = planningMode == null ? PlanningMode.SINGLE_PASS : planningMode;
+    entity.previewStatus = PlanningPreviewStatus.DRAFT;
+    entity.previewContractVersion = previewContractVersion == null || previewContractVersion.isBlank()
+        ? "3.0"
+        : previewContractVersion.trim();
+    entity.qualitySummaryJson = Map.of();
+    entity.repairStatusJson = Map.of();
+    entity.blueprintPayloadJson = Map.of();
+    entity.governanceSnapshotJson = Map.of();
+    entity.version = 0L;
+    return entity;
+  }
+
+  public static ProjectPlanningPreviewEntity createDraft(
+      final UUID preparationId,
+      final String selectedStarterKey,
+      final PlanningMode planningMode,
+      final String previewContractVersion,
+      final Map<String, Object> qualitySummaryJson,
+      final Map<String, Object> repairStatusJson,
+      final Map<String, Object> blueprintPayloadJson) {
+    final ProjectPlanningPreviewEntity entity = createDraft(
+        preparationId,
+        selectedStarterKey,
+        planningMode,
+        "legacy",
+        previewContractVersion);
+    entity.qualitySummaryJson = copyJsonMap(qualitySummaryJson);
+    entity.repairStatusJson = copyJsonMap(repairStatusJson);
+    entity.blueprintPayloadJson = copyJsonMap(blueprintPayloadJson);
+    return entity;
+  }
+
+  public UUID getId() {
+    return id;
+  }
+
+  public UUID getPreparationId() {
+    return preparationId;
+  }
+
+  public String getSelectedStarterKey() {
+    return selectedStarterKey;
+  }
+
+  public String getPreviewCacheKey() {
+    return previewCacheKey;
+  }
+
+  public PlanningMode getPlanningMode() {
+    return planningMode;
+  }
+
+  public PlanningPreviewStatus getPreviewStatus() {
+    return previewStatus;
+  }
+
+  public Map<String, Object> getQualitySummaryJson() {
+    return copyJsonMap(qualitySummaryJson);
+  }
+
+  public Map<String, Object> getRepairStatusJson() {
+    return copyJsonMap(repairStatusJson);
+  }
+
+  public String getPreviewContractVersion() {
+    return previewContractVersion;
+  }
+
+  public OffsetDateTime getCreatedAt() {
+    return createdAt;
+  }
+
+  public Map<String, Object> getBlueprintPayloadJson() {
+    return copyJsonMap(blueprintPayloadJson);
+  }
+
+  public Map<String, Object> getGovernanceSnapshotJson() {
+    return copyJsonMap(governanceSnapshotJson);
+  }
+
+  public void attachGovernanceSnapshot(final Map<String, Object> governanceSnapshotJson) {
+    if (previewStatus != PlanningPreviewStatus.DRAFT) {
+      throw new IllegalStateException("Can only attach governance snapshot to draft previews");
+    }
+    this.governanceSnapshotJson = copyJsonMap(governanceSnapshotJson);
+  }
+
+  public void markReadyForReview(
+      final Map<String, Object> qualitySummaryJson,
+      final Map<String, Object> repairStatusJson,
+      final Map<String, Object> blueprintPayloadJson) {
+    previewStatus = PlanningPreviewStatus.READY_FOR_REVIEW;
+    this.qualitySummaryJson = copyJsonMap(qualitySummaryJson);
+    this.repairStatusJson = copyJsonMap(repairStatusJson);
+    this.blueprintPayloadJson = copyJsonMap(blueprintPayloadJson);
+  }
+
+  public void markRejected(
+      final Map<String, Object> qualitySummaryJson,
+      final Map<String, Object> repairStatusJson,
+      final Map<String, Object> blueprintPayloadJson) {
+    previewStatus = PlanningPreviewStatus.REJECTED;
+    this.qualitySummaryJson = copyJsonMap(qualitySummaryJson);
+    this.repairStatusJson = copyJsonMap(repairStatusJson);
+    this.blueprintPayloadJson = copyJsonMap(blueprintPayloadJson);
+  }
+
+  public void markAccepted() {
+    if (previewStatus != PlanningPreviewStatus.READY_FOR_REVIEW) {
+      throw new IllegalStateException("Only review-ready previews can be accepted");
+    }
+    previewStatus = PlanningPreviewStatus.ACCEPTED;
+  }
+
+  public void markFailed(final String reason) {
+    if (previewStatus != PlanningPreviewStatus.DRAFT) {
+      throw new IllegalStateException("Only draft previews can be marked as failed");
+    }
+    previewStatus = PlanningPreviewStatus.FAILED;
+    final PlanningRepairOutcome updatedRepairOutcome = PlanningDecisionPayloadMapper
+        .fromLegacyRepairStatus(repairStatusJson)
+        .withStatus(RepairStatus.FAILED, reason);
+    repairStatusJson = new LinkedHashMap<>(PlanningDecisionPayloadMapper.toLegacyRepairStatus(updatedRepairOutcome));
+  }
+
+  public void markInvalidated(final String reason) {
+    previewStatus = PlanningPreviewStatus.INVALIDATED;
+    if (reason == null || reason.isBlank()) {
+      return;
+    }
+    final PlanningRepairOutcome updatedRepairOutcome = PlanningDecisionPayloadMapper
+        .fromLegacyRepairStatus(repairStatusJson)
+        .withStatus(RepairStatus.INVALIDATED, reason);
+    repairStatusJson = new LinkedHashMap<>(PlanningDecisionPayloadMapper.toLegacyRepairStatus(updatedRepairOutcome));
+  }
+
+  private static Map<String, Object> copyJsonMap(final Map<String, Object> value) {
+    return deepCopyMap(value);
+  }
+
+  private static Map<String, Object> deepCopyMap(final Map<String, Object> original) {
+    if (original == null) {
+      return Map.of();
+    }
+    final Map<String, Object> copy = new LinkedHashMap<>();
+    for (final Map.Entry<String, Object> entry : original.entrySet()) {
+      copy.put(entry.getKey(), deepCopyObject(entry.getValue()));
+    }
+    return copy;
+  }
+
+  private static Object deepCopyObject(final Object obj) {
+    if (obj instanceof Map) {
+      final Map<String, Object> copyMap = new LinkedHashMap<>();
+      for (final Map.Entry<?, ?> entry : ((Map<?, ?>) obj).entrySet()) {
+        if (entry.getKey() instanceof String) {
+          copyMap.put((String) entry.getKey(), deepCopyObject(entry.getValue()));
+        }
+      }
+      return copyMap;
+    } else if (obj instanceof java.util.List) {
+      final java.util.List<Object> copyList = new java.util.ArrayList<>();
+      for (final Object item : (java.util.List<?>) obj) {
+        copyList.add(deepCopyObject(item));
+      }
+      return copyList;
+    } else {
+      return obj;
+    }
+  }
+}
